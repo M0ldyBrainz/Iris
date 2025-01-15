@@ -1,10 +1,14 @@
 package net.irisshaders.iris.mixin;
 
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.llamalad7.mixinextras.sugar.Local;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.irisshaders.iris.Iris;
 import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.util.Mth;
 import net.minecraft.world.effect.MobEffects;
@@ -39,8 +43,7 @@ public abstract class MixinModelViewBobbing {
 	@Shadow
 	@Final
 	private Camera mainCamera;
-	@Shadow
-	private int confusionAnimationTick;
+
 	@Unique
 	private Matrix4fc bobbingEffectsModel;
 	@Unique
@@ -51,6 +54,12 @@ public abstract class MixinModelViewBobbing {
 
 	@Shadow
 	protected abstract void bobHurt(PoseStack pGameRenderer0, float pFloat1);
+
+	@Shadow
+	private float spinningEffectTime;
+
+	@Shadow
+	private float spinningEffectSpeed;
 
 	@Inject(method = "renderLevel", at = @At("HEAD"))
 	private void iris$saveShadersOn(DeltaTracker deltaTracker, CallbackInfo ci) {
@@ -76,6 +85,12 @@ public abstract class MixinModelViewBobbing {
 		if (!areShadersOn) this.bobView(pGameRenderer0, pFloat1);
 	}
 
+	@WrapOperation(method = "renderLevel", at = @At(value = "INVOKE", target = "Ljava/lang/Double;floatValue()F"))
+	private float fixNausea(Double instance, Operation<Float> original) {
+		if (areShadersOn) return 0.0f;
+		return original.call(instance);
+	}
+
 
 	@Redirect(method = "renderLevel",
 		at = @At(value = "INVOKE",
@@ -95,7 +110,7 @@ public abstract class MixinModelViewBobbing {
 	@Redirect(method = "renderLevel",
 		at = @At(value = "INVOKE",
 			target = "Lorg/joml/Matrix4f;rotation(Lorg/joml/Quaternionfc;)Lorg/joml/Matrix4f;", remap = false))
-	private Matrix4f iris$applyBobbingToModelView(Matrix4f instance, Quaternionfc quat, DeltaTracker deltaTracker) {
+	private Matrix4f iris$applyBobbingToModelView(Matrix4f instance, Quaternionfc quat, DeltaTracker deltaTracker, @Local LocalPlayer localPlayer) {
 		if (!areShadersOn) {
 			instance.rotation(quat);
 
@@ -105,28 +120,28 @@ public abstract class MixinModelViewBobbing {
 		PoseStack stack = new PoseStack();
 		stack.last().pose().set(instance);
 
-		float tickDelta = this.mainCamera.getPartialTickTime();
-
-		this.bobHurt(stack, tickDelta);
+		this.bobHurt(stack, this.mainCamera.getPartialTickTime());
 		if (this.minecraft.options.bobView().get()) {
-			this.bobView(stack, tickDelta);
+			this.bobView(stack, this.mainCamera.getPartialTickTime());
 		}
 
 		instance.set(stack.last().pose());
 
-		float f = deltaTracker.getGameTimeDeltaPartialTick(false);
-		float h = this.minecraft.options.screenEffectScale().get().floatValue();
-		float i = Mth.lerp(f, this.minecraft.player.oSpinningEffectIntensity, this.minecraft.player.spinningEffectIntensity) * h * h;
-		if (i > 0.0F) {
-			int j = this.minecraft.player.hasEffect(MobEffects.CONFUSION) ? 7 : 20;
-			float k = 5.0F / (i * i + 5.0F) - i * 0.04F;
-			k *= k;
-			Vector3f vector3f = new Vector3f(0.0F, Mth.SQRT_OF_TWO / 2.0F, Mth.SQRT_OF_TWO / 2.0F);
-			float l = ((float) this.confusionAnimationTick + f) * (float) j * (float) (Math.PI / 180.0);
-			instance.rotate(l, vector3f);
-			instance.scale(1.0F / k, 1.0F, 1.0F);
-			instance.rotate(-l, vector3f);
-		}
+		float tickDelta = deltaTracker.getGameTimeDeltaPartialTick(false);
+        float scale = this.minecraft.options.screenEffectScale().get().floatValue();
+        float portalIntensity = Mth.lerp(tickDelta, localPlayer.oPortalEffectIntensity, localPlayer.portalEffectIntensity);
+        float nauseaIntensity = localPlayer.getEffectBlendFactor(MobEffects.NAUSEA, tickDelta);
+        float finalIntensity = Math.max(portalIntensity, nauseaIntensity) * (scale * scale);
+		Vector3f transformation;
+        if (finalIntensity > 0.0f) {
+            float intensity = 5.0f / (finalIntensity * finalIntensity + 5.0f) - finalIntensity * 0.04f;
+			intensity *= intensity;
+			transformation = new Vector3f(0.0f, Mth.SQRT_OF_TWO / 2.0f, Mth.SQRT_OF_TWO / 2.0f);
+            float rotationAngle = (this.spinningEffectTime + tickDelta * this.spinningEffectSpeed) * ((float)Math.PI / 180);
+			instance.rotate(rotationAngle, transformation);
+			instance.scale(1.0f / intensity, 1.0f, 1.0f);
+			instance.rotate(-rotationAngle, transformation);
+        }
 
 		instance.rotate(quat);
 
